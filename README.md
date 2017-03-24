@@ -9,8 +9,6 @@ See below for tested adapters, and example configurations.
 
 This has not yet been extensively tested with all JDBC drivers and may not yet work for you.
 
-If you do find this works for a JDBC driver without an example, let me know and provide a small example configuration if you can.
-
 This plugin does not bundle any JDBC jar files, and does expect them to be in a
 particular location. Please ensure you read the 4 installation lines below.
 
@@ -27,8 +25,8 @@ For development:
   - See v1.4 branch for logstash 1.4
 
 ## Installation
-  - Run `bin/logstash-plugin install logstash-output-jdbc` in your logstash installation directory
-  - Now either:
+  - manally copy files to your {logstash_install_dir}/vendor/bundle/jruby/{version}/gems/
+  - Now either:
     - Use driver_jar_path in your configuraton to specify a path to your jar file
   - Or:
     - Create the directory vendor/jar/jdbc in your logstash installation (`mkdir -p vendor/jar/jdbc/`)
@@ -47,8 +45,7 @@ For development:
 | connection_test_query | String | Connection test and init query string, required for some JDBC drivers that don't support isValid(). Typically you'd set to this "SELECT 1" | No |  |
 | username | String | JDBC username - this is optional as it may be included in the connection string, for many drivers | No | |
 | password | String | JDBC password - this is optional as it may be included in the connection string, for many drivers | No | |
-| statement | Array | An array of strings representing the SQL statement to run. Index 0 is the SQL statement that is prepared, all other array entries are passed in as parameters (in order). A parameter may either be a property of the event (i.e. "@timestamp", or "host") or a formatted string (i.e. "%{host} - %{message}" or "%{message}"). If a key is passed then it will be automatically converted as required for insertion into SQL. If it's a formatted string then it will be passed in verbatim. | Yes |  |
-| unsafe_statement | Boolean | If yes, the statement is evaluated for event fields - this allows you to use dynamic table names, etc. **This is highly dangerous** and you should **not** use this unless you are 100% sure that the field(s) you are passing in are 100% safe. Failure to do so will result in possible SQL injections. Example statement: [ "insert into %{table_name_field} (column) values(?)", "fieldname" ] | No | False |
+| tables | Hash | eg, tables => {"table_name" => {seperator => "," fields => ["Date", "String", "String", "Timestamp", "String", "Number", "String", "Number", "String", "String", "String"]}}.  table_name is the destination table to insert record.  seperator is the  delimiter to split message in events. fields is a list of data types for each field | Yes |  |
 | max_pool_size | Number | Maximum number of connections to open to the SQL server at any 1 time | No | 5 |
 | connection_timeout | Number | Number of seconds before a SQL connection is closed | No | 2800 |
 | flush_size | Number | Maximum number of entries to buffer before sending to SQL - if this is reached before idle_flush_time | No | 1000 |
