@@ -53,8 +53,11 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
   # jdbc password - optional, maybe in the connection string
   config :password, validate: :string, required: false
 
-  # [ "insert into table (message) values(?)", "%{message}" ]
-  config :statement, validate: :array, required: true
+  # eg, tables => {"table_name" => {seperator => "|" fields => ["Date", "String", "String", "Timestamp", "String", "Number", "String", "Number", "String", "String", "String"]}}
+  # table_name is the destination table to insert record
+  # seperator is the delimiter to split message in events
+  # fields is a list of data types for each field
+  config :tables, validate: :hash, required: true
 
   # If this is an unsafe statement, use event.sprintf
   # This also has potential performance penalties due to having to create a
@@ -207,11 +210,32 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
     end
 
     events.each do |event|
+      table = event.get("table")
+      table_setting = @tables.fetch(table, nil)
+      if table == nil || table_setting == nil
+        continue
+      end
       begin
-        statement = connection.prepareStatement(
-          (@unsafe_statement == true) ? event.sprintf(@statement[0]) : @statement[0]
-        )
-        statement = add_statement_event_params(statement, event) if @statement.length > 1
+        fields = table_setting.get("fields")
+        sql = "insert into " + table + " values("
+        fields.each_with_index do |type, idx|
+          if type == "Timestamp"
+            sql += "CAST (? AS timestamp)"
+          elsif type == "Date"
+            sql += "CAST (? AS date)"
+          else
+            sql += "?"
+          end
+
+          if idx == fields.length - 1
+            sql += ")"
+          else
+            sql += ","
+          end
+        end
+        statement = connection.prepareStatement(sql)
+        statement = add_statement_event_params(statement, event.get("message"), event.get("prefix"), table_setting.get("seperator"), fields)
+        @logger.warn(statement.to_s)
         statement.execute
       rescue => e
         if retry_exception?(e)
@@ -259,44 +283,34 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
     end
   end
 
-  def add_statement_event_params(statement, event)
-    @statement[1..-1].each_with_index do |i, idx|
-      if i.is_a? String 
-        value = event.get(i)
-        if value.nil? and i =~ /%\{/
-          value = event.sprintf(i)
-        end
-      else
-        value = i
-      end
-
-      case value
-      when Time
-        # See LogStash::Timestamp, below, for the why behind strftime.
-        statement.setString(idx + 1, value.strftime(STRFTIME_FMT))
-      when LogStash::Timestamp
-        # XXX: Using setString as opposed to setTimestamp, because setTimestamp
-        # doesn't behave correctly in some drivers (Known: sqlite)
-        #
-        # Additionally this does not use `to_iso8601`, since some SQL databases
-        # choke on the 'T' in the string (Known: Derby).
-        #
-        # strftime appears to be the most reliable across drivers.
-        statement.setString(idx + 1, value.time.strftime(STRFTIME_FMT))
-      when Fixnum, Integer
-        if value > 2147483647 or value < -2147483648
-          statement.setLong(idx + 1, value)
+  def add_statement_event_params(statement, message, prefix, seperator, fields)
+    if prefix != nil
+      values = prefix + message.split(seperator)
+    else
+      values = message.split(seperator)
+    end
+    if values.length != field_count
+      @logger.warn("fileds' count does not match the values' count")
+    else
+      fields.each_with_index do |type, idx|
+        case type
+        when "Date"
+          statement.setString(idx + 1, values[idx])
+        when "DateTime"
+          statement.setString(idx + 1, values[idx])
+        when "String"
+          statement.setString(idx + 1, values[idx])
+        when "Timestamp"
+          statement.setString(idx + 1, values[idx])
+        when "Number"
+          statement.setLong(idx + 1, values[idx].to_i)
+        when "Float"
+          statement.setFloat(idx + 1, values[idx].to_f)
+        when "Boolean"
+          statement.setBoolean(idx + 1, values[idx] == "true")
         else
-          statement.setInt(idx + 1, value)
+          statement.setString(idx + 1, nil)
         end
-      when Float
-        statement.setFloat(idx + 1, value)
-      when String
-        statement.setString(idx + 1, value)
-      when true, false
-        statement.setBoolean(idx + 1, value)
-      else
-        statement.setString(idx + 1, nil)
       end
     end
 
