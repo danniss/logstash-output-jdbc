@@ -111,14 +111,6 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
 
     @logger.warn('JDBC - Flush size is set to > 1000') if @flush_size > 1000
 
-    if @statement.empty?
-      @logger.error('JDBC - No statement provided. Configuration error.')
-    end
-
-    if !@unsafe_statement && @statement.length < 2
-      @logger.error("JDBC - Statement has no parameters. No events will be inserted into SQL as you're not passing any event data. Likely configuration error.")
-    end
-
     setup_and_test_pool!
   end
 
@@ -216,12 +208,14 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
         continue
       end
       begin
-        fields = table_setting.get("fields")
+        fields = table_setting.fetch("fields")
         sql = "insert into " + table + " values("
         fields.each_with_index do |type, idx|
-          if type == "Timestamp"
+          if type == "TIMESTAMP"
             sql += "CAST (? AS timestamp)"
-          elsif type == "Date"
+          elsif type == "DATETIME"
+            sql += "CAST (? AS timestamp)"
+          elsif type == "DATE"
             sql += "CAST (? AS date)"
           else
             sql += "?"
@@ -234,7 +228,7 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
           end
         end
         statement = connection.prepareStatement(sql)
-        statement = add_statement_event_params(statement, event.get("message"), event.get("prefix"), table_setting.get("seperator"), fields)
+        statement = add_statement_event_params(statement, event.get("message"), event.get("prefix"), table_setting.fetch("seperator"), fields)
         @logger.warn(statement.to_s)
         statement.execute
       rescue => e
@@ -289,27 +283,29 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
     else
       values = message.split(seperator)
     end
-    if values.length != field_count
+    @logger.warn(values.to_s)
+    @logger.warn(seperator)
+    if values.length != fields.length
       @logger.warn("fileds' count does not match the values' count")
     else
       fields.each_with_index do |type, idx|
         case type
-        when "Date"
+        when "DATE"
           statement.setString(idx + 1, values[idx])
-        when "DateTime"
+        when "DATETIME"
           statement.setString(idx + 1, values[idx])
-        when "String"
+        when "STRING"
           statement.setString(idx + 1, values[idx])
-        when "Timestamp"
+        when "TIMESTAMP"
           statement.setString(idx + 1, values[idx])
-        when "Number"
+        when "NUMBER"
           statement.setLong(idx + 1, values[idx].to_i)
-        when "Float"
+        when "FLOAT"
           statement.setFloat(idx + 1, values[idx].to_f)
-        when "Boolean"
+        when "BOOLEAN"
           statement.setBoolean(idx + 1, values[idx] == "true")
         else
-          statement.setString(idx + 1, nil)
+          statement.setString(idx + 1, values[idx].to_s)
         end
       end
     end
