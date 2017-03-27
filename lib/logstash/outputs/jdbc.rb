@@ -229,7 +229,6 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
         end
         statement = connection.prepareStatement(sql)
         statement = add_statement_event_params(statement, event.get("message"), event.get("prefix"), table_setting.fetch("seperator"), fields)
-        @logger.warn(statement.to_s)
         statement.execute
       rescue => e
         if retry_exception?(e)
@@ -283,8 +282,6 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
     else
       values = message.split(seperator)
     end
-    @logger.warn(values.to_s)
-    @logger.warn(seperator)
     if values.length != fields.length
       @logger.warn("fileds' count does not match the values' count")
     else
