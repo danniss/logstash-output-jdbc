@@ -45,7 +45,7 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
   config :driver_jar_path, validate: :string, required: false
 
   # jdbc connection string
-  config :connection_string, validate: :string, required: true
+  config :connection_base_string, validate: :string, required: true
 
   # jdbc username - optional, maybe in the connection string
   config :username, validate: :string, required: false
@@ -53,8 +53,9 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
   # jdbc password - optional, maybe in the connection string
   config :password, validate: :string, required: false
 
-  # eg, tables => {"table_name" => {seperator => "|" fields => ["Date", "String", "String", "Timestamp", "String", "Number", "String", "Number", "String", "String", "String"]}}
-  # table_name is the destination table to insert record
+  # eg, tables => {"db_name" => {"table_name" => {seperator => "|" fields => ["Date", "String", "String", "Timestamp", "String", "Number", "String", "Number", "String", "String", "String"]}}}
+  # db_name is the destination database to insert record,
+  # table_name is the destination table to insert record,
   # seperator is the delimiter to split message in events
   # fields is a list of data types for each field
   config :tables, validate: :hash, required: true
@@ -106,12 +107,12 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
     @logger.info('JDBC - Starting up')
 
     load_jar_files!
+    init_pools!
 
     @stopping = Concurrent::AtomicBoolean.new(false)
 
     @logger.warn('JDBC - Flush size is set to > 1000') if @flush_size > 1000
 
-    setup_and_test_pool!
   end
 
   def multi_receive(events)
@@ -122,7 +123,9 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
 
   def close
     @stopping.make_true
-    @pool.close
+    @pools.each do |name, pool|
+        pool.close
+    end
     super
   end
 
@@ -135,7 +138,7 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
     @pool.setAutoCommit(@driver_auto_commit)
     @pool.setDriverClassName(@driver_class) if @driver_class
 
-    @pool.setJdbcUrl(@connection_string)
+    @pool.setJdbcUrl(@connection_base_string)
 
     @pool.setUsername(@username) if @username
     @pool.setPassword(@password) if @password
@@ -158,6 +161,32 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
       @logger.warn('JDBC - Connection is not reporting as validate. Either connection is invalid, or driver is not getting the appropriate response.')
     end
     test_connection.close
+  end
+
+  def init_pools!
+    @pools = {}
+  end
+
+  def get_connection(db_name)
+    pool = @pools[db_name]
+    if pool == nil
+        pool = Java::ComZaxxerHikari::HikariDataSource.new
+        pool.setAutoCommit(@driver_auto_commit)
+        pool.setDriverClassName(@driver_class) if @driver_class
+
+        pool.setJdbcUrl(@connection_base_string + "/" + db_name)
+
+        pool.setUsername(@username) if @username
+        pool.setPassword(@password) if @password
+
+        pool.setMaximumPoolSize(@max_pool_size)
+        pool.setConnectionTimeout(@connection_timeout)
+        pool.setConnectionTestQuery("select 1")
+        pool.setConnectionInitSql("select 1")
+        @pools[db_name] = pool
+    end
+
+    pool.getConnection
   end
 
   def load_jar_files!
@@ -192,54 +221,35 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
     statement = nil
     events_to_retry = []
 
-    begin
-      connection = @pool.getConnection
-    rescue => e
-      log_jdbc_exception(e, true)
-      # If a connection is not available, then the server has gone away
-      # We're not counting that towards our retry count.
-      return events, false
-    end
 
     events.each do |event|
-      table = event.get("table")
-      table_setting = @tables.fetch(table, nil)
-      if table == nil || table_setting == nil
-        continue
+      @logger.info(event.get("db_table"))
+      @logger.info(event.get("messages").length.to_s)
+      db_name, table = event.get("db_table").split("|")
+      if db_name == nil
+        next
       end
       begin
-        fields = table_setting.fetch("fields")
-        sql = "insert into " + table + " values("
-        fields.each_with_index do |type, idx|
-          if type == "TIMESTAMP"
-            sql += "CAST (? AS timestamp)"
-          elsif type == "DATETIME"
-            sql += "CAST (? AS timestamp)"
-          elsif type == "DATE"
-            sql += "CAST (? AS date)"
-          else
-            sql += "?"
-          end
-
-          if idx == fields.length - 1
-            sql += ")"
-          else
-            sql += ","
-          end
-        end
-        statement = connection.prepareStatement(sql)
-        statement = add_statement_event_params(statement, event.get("message"), event.get("prefix"), table_setting.fetch("seperator"), fields)
-        statement.execute
+        connection = get_connection(db_name)
       rescue => e
-        if retry_exception?(e)
-          events_to_retry.push(event)
-        end
-      ensure
-        statement.close unless statement.nil?
+        log_jdbc_exception(e, true)
+        # If a connection is not available, then the server has gone away
+        # We're not counting that towards our retry count.
+        return events, false
       end
+      if table == nil
+        next
+      end
+      table_settings = @tables.fetch(db_name, nil)
+      if table_settings == nil
+        next
+      end
+      table_setting = table_settings.fetch(table, nil)
+      if table_setting == nil
+        next
+      end
+      events_to_retry += push_event_into_db(event, connection, table, table_setting)
     end
-
-    connection.close unless connection.nil?
 
     return events_to_retry, true
   end
@@ -276,38 +286,91 @@ class LogStash::Outputs::Jdbc < LogStash::Outputs::Base
     end
   end
 
-  def add_statement_event_params(statement, message, prefix, seperator, fields)
-    if prefix != nil
-      values = prefix + message.split(seperator)
-    else
-      values = message.split(seperator)
-    end
-    if values.length != fields.length
-      @logger.warn("fileds' count does not match the values' count")
-    else
-      fields.each_with_index do |type, idx|
-        case type
-        when "DATE"
-          statement.setString(idx + 1, values[idx])
-        when "DATETIME"
-          statement.setString(idx + 1, values[idx])
-        when "STRING"
-          statement.setString(idx + 1, values[idx])
-        when "TIMESTAMP"
-          statement.setString(idx + 1, values[idx])
-        when "NUMBER"
-          statement.setLong(idx + 1, values[idx].to_i)
-        when "FLOAT"
-          statement.setFloat(idx + 1, values[idx].to_f)
-        when "BOOLEAN"
-          statement.setBoolean(idx + 1, values[idx] == "true")
-        else
-          statement.setString(idx + 1, values[idx].to_s)
-        end
+  def build_prepare_statement(connection, table, fields, count)
+    sql = "insert into " + table + " values"
+    field_str = "("
+    fields.each_with_index do |type, idx|
+      if type == "TIMESTAMP"
+        field_str += "CAST (? AS timestamp)"
+      elsif type == "DATETIME"
+        field_str += "CAST (? AS timestamp)"
+      elsif type == "DATE"
+        field_str += "CAST (? AS date)"
+      else
+        field_str += "?"
+      end
+
+      if idx == fields.length - 1
+        field_str += ")"
+      else
+        field_str += ","
       end
     end
+    sql += (field_str + ",") * (count - 1)
+    sql += field_str
+    connection.prepareStatement(sql)
+  end
 
-    statement
+  def push_event_into_db(event, connection, table, table_setting)
+    events_to_retry = []
+    begin
+      fields = table_setting.fetch("fields")
+      messages = event.get("messages")
+      prefixs = event.get("prefixs")
+      seperator = table_setting.fetch("seperator")
+      statement = build_prepare_statement(connection, table, fields, messages.length)
+
+      position = 1
+      messages.each_with_index do |message, message_idx|
+        prefix = prefixs[message_idx]
+        if prefix != nil
+          values = prefix + message.split(seperator)
+        else
+          values = message.split(seperator)
+        end
+        fields.each_with_index do |type, field_idx|
+          case type
+          when "NUMBER"
+            begin
+              statement.setLong(position, values[field_idx])
+            rescue Exception
+              statement.setLong(position, nil)
+            end
+          when "FLOAT"
+            begin
+              statement.setFloat(position, values[field_idx])
+            rescue Exception
+              statement.setFloat(position, nil)
+            end
+          when "BOOLEAN"
+            begin
+              statement.setBoolean(position, values[field_idx])
+            rescue Exception
+              statement.setBoolean(position, nil)
+            end
+          else
+            begin
+              statement.setString(position, values[field_idx])
+            rescue Exception
+              statement.setString(position, nil)
+            end
+          end
+          position += 1
+        end
+      end
+
+      statement.execute
+    rescue => e
+      if retry_exception?(e)
+        events_to_retry.push(event)
+      else
+        @logger.warn(statement.to_s)
+      end
+    ensure
+      statement.close unless statement.nil?
+    end
+    connection.close unless connection.nil?
+    return events_to_retry
   end
 
   def retry_exception?(exception)
