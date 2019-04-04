@@ -4,25 +4,7 @@
 
 This plugin is provided as an external plugin and is not part of the Logstash project.
 
-This plugin allows you to output to SQL databases, using JDBC adapters.
-See below for tested adapters, and example configurations.
-
-This has not yet been extensively tested with all JDBC drivers and may not yet work for you.
-
-This plugin does not bundle any JDBC jar files, and does expect them to be in a
-particular location. Please ensure you read the 4 installation lines below.
-
-## Changelog
-See CHANGELOG.md
-
-## Versions
-Released versions are available via rubygems, and typically tagged.
-
-For development:
-  - See master branch for logstash v5
-  - See v2.x branch for logstash v2
-  - See v1.5 branch for logstash v1.5 
-  - See v1.4 branch for logstash 1.4
+This plugin allows you to output to SQL databases, in batch way.
 
 ## Installation
   - manally copy files to your {logstash_install_dir}/vendor/bundle/jruby/{version}/gems/
@@ -63,21 +45,3 @@ If you have a working sample configuration, for a DB thats not listed, pull requ
 For development tests are recommended to run inside a virtual machine (Vagrantfile is included in the repo), as it requires
 access to various database engines and could completely destroy any data in a live system.
 
-If you have vagrant available (this is temporary whilst I'm hacking on v5 support. I'll make this more streamlined later):
-  - `vagrant up`
-  - `vagrant ssh`
-  - `cd /vagrant`
-  - `gem install bundler`
-  - `cd /vagrant && bundle install && bundle exec rake vendor && bundle exec rake install_jars`
-  - `./scripts/travis-before_script.sh && source ./scripts/travis-variables.sh`
-  - `bundle exec rspec`
-
-## Releasing
-  - Update Changelog
-  - Bump version in gemspec
-  - Commit
-  - Create tag `git tag v<version-number-in-gemspec>`
-  - `bundle exec rake install_jars`
-  - `bundle exec rake pre_release_checks`
-  - `gem build logstash-output-jdbc.gemspec`
-  - `gem push`
